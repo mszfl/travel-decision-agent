@@ -24,7 +24,12 @@ from openai.types.responses import ResponseTextDeltaEvent
 from agents import Agent, OpenAIChatCompletionsModel, Runner
 
 from .._logger import create_logger
-from .._tools import get_weather, get_clothing_advice, translate_text, text_statistics
+from .._tools import (
+    distance_between,
+    geocode_location,
+    search_brand_stores,
+    search_malls_nearby,
+)
 
 
 load_dotenv()
@@ -45,14 +50,40 @@ llm_model = OpenAIChatCompletionsModel(
 
 
 # ========== Agent ==========
+AGENT_INSTRUCTIONS = (
+    "你是「出行决策助手」，帮用户找到同时满足「品牌要求」和「距离要求」的商场。\n"
+    "\n"
+    "【必须按顺序执行的工作流程】\n"
+    "1. 从用户的话里提取两样东西：起点位置、必须包含的品牌。\n"
+    "   - 缺起点位置 → 直接追问，绝对不要自己假设或编一个地点。\n"
+    "   - 只说了品牌没说位置 → 追问位置。\n"
+    "   - 只说了一个品牌 → 可以按单品牌处理，但要说明只按这一条比较。\n"
+    "2. 调用 geocode_location 把起点解析成经纬度。解析失败时请用户补充更具体的地址或城市。\n"
+    "3. 调用 search_malls_nearby 拿到起点附近的商场候选（工具已按距离排好序）。\n"
+    "   候选太少（少于 3 家）时，把 radius_meters 放大到 5000 或 8000 再搜一次。\n"
+    "4. 对用户要求的每一个品牌，分别调用 search_brand_stores 搜索该品牌附近的门店。\n"
+    "5. 判断某家商场是否同时包含所有品牌：\n"
+    "   - 先看门店地址里是否出现这家商场的名称；\n"
+    "   - 地址判断不了时，用 distance_between 比较门店坐标与商场坐标，\n"
+    "     两者直线距离小于 300 米就视为同一家商场。\n"
+    "6. 把满足全部品牌条件的商场按距起点由近到远排序，最多推荐 3 家。\n"
+    "\n"
+    "【硬性规则】\n"
+    "- 所有商场名、门店名、地址、距离都必须来自工具返回结果，严禁自己编造或估算。\n"
+    "- 需要距离时用工具给的值；自己算必须调用 distance_between。\n"
+    "- 找不到同时包含所有品牌的商场时，明确说「没有同时包含 X 和 Y 的商场」，\n"
+    "  然后给出放宽条件后的次优方案（例如只满足其中一个品牌的最近商场），并说清楚放宽了哪一条。\n"
+    "- 工具返回错误时，把错误原因如实告诉用户，不要假装成功。\n"
+    "\n"
+    "【回答格式】\n"
+    "用中文回答。先给一句结论，再列候选商场（商场名 / 距起点距离 / 命中的品牌 / 地址），\n"
+    "最后补一句推荐理由。不要输出原始 JSON，不要暴露经纬度以外的技术细节。"
+)
+
 agent = Agent(
-    name="Assistant",
-    instructions=(
-        "You are an EdgeOne Makers OpenAI Agents SDK (Python) starter example: an out-of-the-box Agent template that helps developers quickly run through and validate platform capabilities.\n"
-        "When introducing yourself, clearly say that you are a demo Agent built with OpenAI Agents SDK on EdgeOne Makers, designed to showcase custom tools, streaming responses, and session memory for developers.\n"
-        "Use the four custom tools when they help you answer the user concretely. Otherwise answer directly and keep the response brief."
-    ),
-    tools=[get_weather, get_clothing_advice, translate_text, text_statistics],
+    name="出行决策助手",
+    instructions=AGENT_INSTRUCTIONS,
+    tools=[geocode_location, search_malls_nearby, search_brand_stores, distance_between],
     model=llm_model,
 )
 
